@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+build/
+dist/
+
+# CUDA / C++
+*.o
+*.obj
+*.a
+*.lib
+*.exe
+*.out
+bin/
+build/
+
+# Editors
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Project specific
+benchmarks/results/
+*.log
