@@ -35,7 +35,7 @@ def to_bits(value: int, width: int) -> list[int]:
 
 
 class _Grain:
-    """80-bit LFSR used by the Poseidon reference to derive round constants.
+    """80-bit LFSR used by the Poseidon reference to derive round constants
 
     the starting state packs the poseidon params into 80 bits:
         2 bits  : field type    (1 = GF(p))
@@ -130,7 +130,7 @@ def ensure() -> tuple[list[int], list[list[int]]]:
     return _ROUND_CONSTANTS, _MDS  # type: ignore[return-value]
 
 
-#========Permutation==========
+#========permutation==========
 
 def sbox(x: int) -> int:
     # the sbox: x^5 mod p
@@ -178,7 +178,7 @@ def poseidon_permutation(state: list[int]) -> list[int]:
     return s
 
 
-#========Sponge hash==========
+#========sponge hash==========
 
 def poseidon_hash(inputs: list[int]) -> int:
     # hash a list of field elements down to one. the input length goes in the
