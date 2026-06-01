@@ -64,7 +64,7 @@ def test_mds_is_square_and_in_field():
 def test_mds_is_invertible():
     # Cauchy matrices are invertible — verify by computing the determinant
     mds = _build_mds()
-    det = _determinant_mod_p(mds, FIELD_P)
+    det = determinant_mod_p(mds, FIELD_P)
     assert det != 0
 
 
@@ -85,7 +85,7 @@ def test_permutation_avalanche():
     a = poseidon_permutation([0, 0, 0])
     b = poseidon_permutation([1, 0, 0])
     # After the full schedule of S-boxes and MDS layers, every output element
-    # should differ. (A few rounds in this would not yet hold.)
+    # should differ
     for x, y in zip(a, b):
         assert x != y
 
@@ -157,7 +157,7 @@ def test_hash_self_consistency_snapshot():
 
 
 # helpers===============================
-def _determinant_mod_p(matrix: list[list[int]], p: int) -> int:
+def determinant_mod_p(matrix: list[list[int]], p: int) -> int:
     # Gaussian elimination determinant in F_p for small matrices
     n = len(matrix)
     m = [row[:] for row in matrix]

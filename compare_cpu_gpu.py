@@ -1,0 +1,136 @@
+"""runs the cpu and gpu versions side by side and checks they agree.
+
+for each size it:
+1. generates the same random leaves for both sides
+2. hashes / builds the tree on the cpu (python/hashes/poseidon.py)
+3. hashes / builds the tree on the gpu (cuda/libpqmerkle.so)
+4. prints the timings and checks the outputs are exactly equal
+
+run `make -C cuda` first. the timings include the host->device copy and the
+python packing. the gpu wins big once theres enough work, but for tiny inputs
+the cpu can be faster since the gpu has fixed per-call overhead.
+"""
+from __future__ import annotations
+
+import random
+import sys
+import time
+
+from python.hashes.poseidon import FIELD_P, poseidon_hash
+from python.merkle.tree import PoseidonMerkleTree
+from bindings.cuda_poseidon import CudaPoseidon
+
+
+def random_field_elements(n: int, seed: int = 0) -> list[int]:
+    # generate n random field elements, same seed gives the same values
+    rng = random.Random(seed)
+    return [rng.randrange(FIELD_P) for _ in range(n)]
+
+
+# ---------------------------------------------------------------------------
+
+def compare_single_hash(cuda: CudaPoseidon) -> None:
+    # hash a few hand-picked inputs and check cpu and gpu agree
+    print("=" * 72)
+    print("Single-hash sanity check (Poseidon over BN254)")
+    print("=" * 72)
+    # the gpu needs every input in a batch to be the same length, so group
+    # them by length. the cpu result is the source of truth.
+    grouped = {
+        1: [[0], [42], [FIELD_P - 1]],
+        2: [[1, 2], [FIELD_P - 1, FIELD_P - 2]],
+        4: [[42, 7, 1337, 9001]],
+    }
+    for length, cases in grouped.items():
+        cpu = [poseidon_hash(c) for c in cases]
+        gpu = cuda.hash_batch(cases)
+        for inp, c, g in zip(cases, cpu, gpu):
+            ok = "OK " if c == g else "FAIL"
+            print(f"  [{ok}] inputs={inp}")
+            print(f"        CPU = 0x{c:064x}")
+            print(f"        GPU = 0x{g:064x}")
+        assert cpu == gpu, f"single-hash mismatch at length {length}"
+
+
+def compare_hash_batch(cuda: CudaPoseidon, n: int, inputs_per_hash: int = 2) -> None:
+    # hash n inputs on both sides, time them, check they match
+    print("=" * 72)
+    print(f"Hash batch: N={n}, inputs_per_hash={inputs_per_hash}")
+    print("=" * 72)
+    groups = [random_field_elements(inputs_per_hash, seed=i) for i in range(n)]
+
+    t0 = time.perf_counter()
+    cpu = [poseidon_hash(g) for g in groups]
+    cpu_dt = time.perf_counter() - t0
+
+    # warm-up call first so the one-time first-launch cost isnt in the timing
+    cuda.hash_batch(groups[:1])
+    t0 = time.perf_counter()
+    gpu = cuda.hash_batch(groups)
+    gpu_dt = time.perf_counter() - t0
+
+    match = cpu == gpu
+    speedup = cpu_dt / gpu_dt if gpu_dt > 0 else float("inf")
+    print(f"  CPU : {cpu_dt*1000:8.2f} ms  ({cpu_dt*1e6/n:7.2f} us/hash)")
+    print(f"  GPU : {gpu_dt*1000:8.2f} ms  ({gpu_dt*1e6/n:7.2f} us/hash)")
+    print(f"  speedup x{speedup:6.2f}    match: {match}")
+    if not match:
+        for i, (c, g) in enumerate(zip(cpu, gpu)):
+            if c != g:
+                print(f"  mismatch at i={i}: cpu=0x{c:x} gpu=0x{g:x}")
+                break
+    assert match, "hash batch mismatch"
+
+
+def compare_merkle(cuda: CudaPoseidon, n_leaves: int) -> None:
+    # build a merkle tree on both sides, time them, check the roots match
+    print("=" * 72)
+    print(f"Merkle tree: {n_leaves} leaves")
+    print("=" * 72)
+    leaves = random_field_elements(n_leaves, seed=n_leaves * 13 + 1)
+
+    t0 = time.perf_counter()
+    cpu_root = PoseidonMerkleTree(leaves).root
+    cpu_dt = time.perf_counter() - t0
+
+    t0 = time.perf_counter()
+    gpu_root = cuda.merkle_root(leaves)
+    gpu_dt = time.perf_counter() - t0
+
+    match = cpu_root == gpu_root
+    speedup = cpu_dt / gpu_dt if gpu_dt > 0 else float("inf")
+    print(f"  CPU : {cpu_dt*1000:8.2f} ms")
+    print(f"  GPU : {gpu_dt*1000:8.2f} ms")
+    print(f"  speedup x{speedup:6.2f}    match: {match}")
+    print(f"  root: 0x{cpu_root:064x}")
+    if not match:
+        print(f"  GPU root differs: 0x{gpu_root:064x}")
+    assert match, "merkle root mismatch"
+
+
+# ---------------------------------------------------------------------------
+
+def main() -> int:
+    # start up the gpu, then run all the comparisons
+    print("Initializing GPU Poseidon (uploading constants)...")
+    t0 = time.perf_counter()
+    cuda = CudaPoseidon()
+    print(f"  done in {(time.perf_counter()-t0)*1000:.1f} ms\n")
+
+    compare_single_hash(cuda)
+    print()
+
+    for n in (16, 256, 4096, 65536):
+        compare_hash_batch(cuda, n)
+        print()
+
+    for n_leaves in (1, 5, 16, 1024, 65536):
+        compare_merkle(cuda, n_leaves)
+        print()
+
+    print("All comparisons passed.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
