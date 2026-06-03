@@ -12,6 +12,45 @@ leaf that hashes to zero would mean breaking poseidon.
 from __future__ import annotations
 
 from ..hashes.poseidon import FIELD_P, poseidon_hash
+from ..hashes.keccak import sha3_256
+
+class Keccak256MerkleTree:
+    # build the tree from the leaves up to the root
+    def __init__(self, leaves: list[bytes]):
+        if not leaves:
+            raise ValueError("at least one leaf required")
+
+        self.original_leaves: list[bytes] = list(leaves)
+
+        # round up to a power of two, pad with 32 zero bytes
+        n = len(self.original_leaves)
+        target = 1
+        while target < n:
+            target <<= 1
+
+        level0 = [sha3_256(x) for x in self.original_leaves]
+        level0 += [bytes(32)] * (target - n)
+
+        # hash pairs level by level until only the root is left
+        self.levels: list[list[bytes]] = [level0]
+        while len(self.levels[-1]) > 1:
+            cur = self.levels[-1]
+            nxt = [
+                sha3_256(cur[2 * i] + cur[2 * i + 1])
+                for i in range(len(cur) // 2)
+            ]
+            self.levels.append(nxt)
+
+    @property
+    def root(self) -> bytes:
+        return self.levels[-1][0]
+
+    @property
+    def depth(self) -> int:
+        return len(self.levels) - 1
+
+    def leaf_count(self) -> int:
+        return len(self.original_leaves)
 
 
 class PoseidonMerkleTree:
