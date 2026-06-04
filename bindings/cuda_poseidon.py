@@ -99,6 +99,22 @@ class CudaPoseidon:
         ]
         self.lib.merkle_build_poseidon.restype = None
 
+        self.lib.merkle_generate_proof_poseidon.argtypes = [
+            u64p, ctypes.c_size_t, ctypes.c_size_t, u64p,
+            ctypes.POINTER(ctypes.c_uint8),
+            ctypes.POINTER(ctypes.c_size_t),
+        ]
+        self.lib.merkle_generate_proof_poseidon.restype = None
+
+        self.lib.merkle_verify_proof_poseidon.argtypes = [
+            u64p, u64p,
+            ctypes.POINTER(ctypes.c_uint8),
+            ctypes.c_size_t,
+            u64p,
+            ctypes.POINTER(ctypes.c_uint8),
+        ]
+        self.lib.merkle_verify_proof_poseidon.restype = None
+
         self._upload_constants()
 
     # build the round constants + MDS and upload them in Montgomery form
@@ -139,3 +155,71 @@ class CudaPoseidon:
         out_buf = (ctypes.c_uint64 * FP_LIMBS)()
         self.lib.merkle_build_poseidon(in_buf, n, out_buf)
         return _from_limbs([out_buf[k] for k in range(FP_LIMBS)])
+
+    def merkle_proof(self, leaves: list[int], index: int) -> list[tuple[str, int]]:
+        if not leaves:
+            raise ValueError("at least one leaf required")
+        if index < 0 or index >= len(leaves):
+            raise IndexError("leaf index out of range")
+
+        n = len(leaves)
+        depth = 0
+        target = 1
+        while target < n:
+            target <<= 1
+            depth += 1
+
+        in_buf = _pack_field_elements(leaves, mont=False)
+        proof_buf = (ctypes.c_uint64 * (depth * FP_LIMBS))()
+        directions_buf = (ctypes.c_uint8 * depth)()
+        proof_len = ctypes.c_size_t(0)
+
+        self.lib.merkle_generate_proof_poseidon(
+            in_buf,
+            n,
+            index,
+            proof_buf,
+            directions_buf,
+            ctypes.byref(proof_len),
+        )
+
+        proof_values = _unpack_field_elements(proof_buf, proof_len.value)
+        proof: list[tuple[str, int]] = []
+        for i, sibling in enumerate(proof_values):
+            direction = "r" if directions_buf[i] == 1 else "l"
+            proof.append((direction, sibling))
+
+        return proof
+
+    def verify_merkle_proof(
+        self,
+        leaf: int,
+        proof: list[tuple[str, int]],
+        root: int,
+    ) -> bool:
+        leaf_buf = _pack_field_elements([leaf], mont=False)
+        proof_values = [sibling for _, sibling in proof]
+        proof_buf = _pack_field_elements(proof_values, mont=False)
+
+        directions_buf = (ctypes.c_uint8 * len(proof))()
+        for i, (direction, _) in enumerate(proof):
+            if direction == "r":
+                directions_buf[i] = 1
+            elif direction == "l":
+                directions_buf[i] = 0
+            else:
+                raise ValueError("direction must be 'l' or 'r'")
+
+        root_buf = _pack_field_elements([root], mont=False)
+        ok = ctypes.c_uint8(0)
+
+        self.lib.merkle_verify_proof_poseidon(
+            leaf_buf,
+            proof_buf,
+            directions_buf,
+            len(proof),
+            root_buf,
+            ctypes.byref(ok),
+        )
+
+        return bool(ok.value)

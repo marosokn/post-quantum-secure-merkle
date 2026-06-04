@@ -114,6 +114,62 @@ def compare_merkle(cuda: CudaPoseidon, n_leaves: int) -> None:
         print(f"  GPU root differs: 0x{gpu_root:064x}")
     assert match, "merkle root mismatch"
 
+def compare_poseidon_proof(cuda: CudaPoseidon, n_leaves: int, index: int) -> None:
+    print("=" * 72)
+    print(f"Merkle proof (Poseidon): {n_leaves} leaves, index={index}")
+    print("=" * 72)
+    leaves = random_field_elements(n_leaves, seed=n_leaves * 17 + 3)
+
+    t0 = time.perf_counter()
+    cpu_tree = PoseidonMerkleTree(leaves)
+    cpu_proof = cpu_tree.generate_proof(index)
+    cpu_gen_dt = time.perf_counter() - t0
+
+    t0 = time.perf_counter()
+    gpu_proof = cuda.merkle_proof(leaves, index)
+    gpu_gen_dt = time.perf_counter() - t0
+
+    t0 = time.perf_counter()
+    cpu_ok = PoseidonMerkleTree.verify_proof(
+        leaves[index],
+        cpu_proof,
+        cpu_tree.root,
+    )
+    cpu_verify_dt = time.perf_counter() - t0
+
+    t0 = time.perf_counter()
+    gpu_ok = cuda.verify_merkle_proof(
+        leaves[index],
+        gpu_proof,
+        cpu_tree.root,
+    )
+    gpu_verify_dt = time.perf_counter() - t0
+
+    wrong_leaf = (leaves[index] + 1) % FIELD_P
+    gpu_wrong_leaf_ok = cuda.verify_merkle_proof(
+        wrong_leaf,
+        gpu_proof,
+        cpu_tree.root,
+    )
+
+    proof_match = cpu_proof == gpu_proof
+
+    print(f"  proof length          : {len(cpu_proof)}")
+    print(f"  CPU proof verifies    : {cpu_ok}")
+    print(f"  GPU proof verifies    : {gpu_ok}")
+    print(f"  GPU wrong leaf passes : {gpu_wrong_leaf_ok}")
+    print(f"  CPU/GPU proof match   : {proof_match}")
+    print(f"  CPU generation        : {cpu_gen_dt*1000:8.2f} ms")
+    print(f"  GPU generation        : {gpu_gen_dt*1000:8.2f} ms")
+    print(f"  CPU verification      : {cpu_verify_dt*1000:8.2f} ms")
+    print(f"  GPU verification      : {gpu_verify_dt*1000:8.2f} ms")
+    print(f"  root                  : 0x{cpu_tree.root:064x}")
+
+    assert cpu_ok, "Poseidon CPU proof verification failed"
+    assert gpu_ok, "Poseidon GPU proof verification failed"
+    assert not gpu_wrong_leaf_ok, "Poseidon GPU proof accepted the wrong leaf"
+    assert proof_match, "Poseidon CPU/GPU proofs differ"
+
 # ---------------------------------------------------------------------------
 
 def compare_keccak_single_hash(cuda: CudaKeccak) -> None:
@@ -195,6 +251,50 @@ def compare_keccak_merkle(cuda: CudaKeccak, n_leaves: int) -> None:
         print(f"  GPU root differs: 0x{gpu_root.hex()}")
     assert match, "sha-3 merkle root mismatch"
 
+def compare_keccak_proof(cuda: CudaKeccak, n_leaves: int, index: int) -> None:
+    print("=" * 72)
+    print(f"CPU SHA-3 proof: {n_leaves} leaves, index={index}")
+    print("=" * 72)
+    leaves = random_bytes_list(n_leaves, size=32, seed=n_leaves * 17 + 4)
+
+    t0 = time.perf_counter()
+    cpu_tree = Keccak256MerkleTree(leaves)
+    cpu_proof = cpu_tree.generate_proof(index)
+    cpu_gen_dt = time.perf_counter() - t0
+
+    t0 = time.perf_counter()
+    gpu_proof = cuda.merkle_proof(leaves, index)
+    gpu_gen_dt = time.perf_counter() - t0
+
+    t0 = time.perf_counter()
+    cpu_ok = Keccak256MerkleTree.verify_proof(leaves[index], cpu_proof, cpu_tree.root)
+    cpu_verify_dt = time.perf_counter() - t0
+
+    t0 = time.perf_counter()
+    gpu_ok = cuda.verify_merkle_proof(leaves[index], gpu_proof, cpu_tree.root)
+    gpu_verify_dt = time.perf_counter() - t0
+
+    wrong_leaf = bytes([leaves[index][0] ^ 1]) + leaves[index][1:]
+    gpu_wrong_leaf_ok = cuda.verify_merkle_proof(wrong_leaf, gpu_proof, cpu_tree.root)
+
+    proof_match = cpu_proof == gpu_proof
+
+    print(f"  proof length          : {len(cpu_proof)}")
+    print(f"  CPU proof verifies    : {cpu_ok}")
+    print(f"  GPU proof verifies    : {gpu_ok}")
+    print(f"  GPU wrong leaf passes : {gpu_wrong_leaf_ok}")
+    print(f"  CPU/GPU proof match   : {proof_match}")
+    print(f"  CPU generation        : {cpu_gen_dt*1000:8.2f} ms")
+    print(f"  GPU generation        : {gpu_gen_dt*1000:8.2f} ms")
+    print(f"  CPU verification      : {cpu_verify_dt*1000:8.2f} ms")
+    print(f"  GPU verification      : {gpu_verify_dt*1000:8.2f} ms")
+    print(f"  root                  : 0x{cpu_tree.root.hex()}")
+
+    assert cpu_ok, "SHA-3 CPU proof verification failed"
+    assert gpu_ok, "SHA-3 GPU proof verification failed"
+    assert not gpu_wrong_leaf_ok, "SHA-3 GPU proof accepted the wrong leaf"
+    assert proof_match, "SHA-3 CPU/GPU proofs differ"
+
 # ---------------------------------------------------------------------------
 
 def main() -> int:
@@ -213,6 +313,10 @@ def main() -> int:
         compare_merkle(cuda_p, n_leaves)
         print()
 
+        index = min(n_leaves - 1, n_leaves // 2)
+        compare_poseidon_proof(cuda_p, n_leaves, index)
+        print()
+
     # --- SHA-3 / Keccak ---
     print("\nInitializing GPU Keccak...")
     t0 = time.perf_counter()
@@ -226,6 +330,9 @@ def main() -> int:
         print()
     for n_leaves in (1, 5, 16, 1024, 65536):
         compare_keccak_merkle(cuda_k, n_leaves)
+        print()
+        index = min(n_leaves - 1, n_leaves // 2)
+        compare_keccak_proof(cuda_k, n_leaves, index)
         print()
 
 
