@@ -19,12 +19,19 @@ import time
 from python.hashes.poseidon import FIELD_P, poseidon_hash
 from python.merkle.tree import PoseidonMerkleTree
 from bindings.cuda_poseidon import CudaPoseidon
+from python.merkle.tree import Keccak256MerkleTree
+from python.hashes.keccak import sha3_256
+from bindings.cuda_keccak import CudaKeccak
 
 
 def random_field_elements(n: int, seed: int = 0) -> list[int]:
     # generate n random field elements, same seed gives the same values
     rng = random.Random(seed)
     return [rng.randrange(FIELD_P) for _ in range(n)]
+
+def random_bytes_list(n: int, size: int = 32, seed: int = 0) -> list[bytes]:
+    rng = random.Random(seed)
+    return [bytes(rng.getrandbits(8) for _ in range(size)) for _ in range(n)]
 
 
 # ---------------------------------------------------------------------------
@@ -107,26 +114,120 @@ def compare_merkle(cuda: CudaPoseidon, n_leaves: int) -> None:
         print(f"  GPU root differs: 0x{gpu_root:064x}")
     assert match, "merkle root mismatch"
 
+# ---------------------------------------------------------------------------
+
+def compare_keccak_single_hash(cuda: CudaKeccak) -> None:
+    # hash a few hand-picked inputs and check cpu and gpu agree
+    print("=" * 72)
+    print("Single-hash sanity check (SHA-3 / Keccak-256)")
+    print("=" * 72)
+    # gpu hash_batch needs equal-length inputs, so group by length
+    grouped = {
+        0:  [b""],
+        3:  [b"abc"],
+        32: [bytes(32), bytes(range(32))],
+        43: [b"The quick brown fox jumps over the lazy dog"],
+    }
+    for length, cases in grouped.items():
+        cpu = [sha3_256(c) for c in cases]
+        gpu = cuda.hash_batch(cases)
+        for inp, c, g in zip(cases, cpu, gpu):
+            ok = "OK " if c == g else "FAIL"
+            disp = (inp[:24] + b"...").hex() if len(inp) > 24 else inp.hex()
+            print(f"  [{ok}] input_len={length}  input=0x{disp}")
+            print(f"        CPU = 0x{c.hex()}")
+            print(f"        GPU = 0x{g.hex()}")
+        assert cpu == gpu, f"sha-3 single-hash mismatch at length {length}"
+
+
+def compare_keccak_hash_batch(cuda: CudaKeccak, n: int, input_len: int = 64) -> None:
+    # hash n inputs on both sides, time them, check they match
+    print("=" * 72)
+    print(f"SHA-3 hash batch: N={n}, input_len={input_len}")
+    print("=" * 72)
+    inputs = random_bytes_list(n, size=input_len, seed=n)
+
+    t0 = time.perf_counter()
+    cpu = [sha3_256(b) for b in inputs]
+    cpu_dt = time.perf_counter() - t0
+
+    # warmup so the first-launch cost isnt in the timing
+    cuda.hash_batch(inputs[:1])
+    t0 = time.perf_counter()
+    gpu = cuda.hash_batch(inputs)
+    gpu_dt = time.perf_counter() - t0
+
+    match = cpu == gpu
+    speedup = cpu_dt / gpu_dt if gpu_dt > 0 else float("inf")
+    print(f"  CPU : {cpu_dt*1000:8.2f} ms  ({cpu_dt*1e6/n:7.2f} us/hash)")
+    print(f"  GPU : {gpu_dt*1000:8.2f} ms  ({gpu_dt*1e6/n:7.2f} us/hash)")
+    print(f"  speedup x{speedup:6.2f}    match: {match}")
+    if not match:
+        for i, (c, g) in enumerate(zip(cpu, gpu)):
+            if c != g:
+                print(f"  mismatch at i={i}: cpu=0x{c.hex()} gpu=0x{g.hex()}")
+                break
+    assert match, "sha-3 hash batch mismatch"
+
+
+def compare_keccak_merkle(cuda: CudaKeccak, n_leaves: int) -> None:
+    # build a merkle tree on both sides, time them, check the roots match
+    print("=" * 72)
+    print(f"SHA-3 Merkle tree: {n_leaves} leaves")
+    print("=" * 72)
+    leaves = random_bytes_list(n_leaves, size=32, seed=n_leaves * 13 + 2)
+
+    t0 = time.perf_counter()
+    cpu_root = Keccak256MerkleTree(leaves).root
+    cpu_dt = time.perf_counter() - t0
+
+    t0 = time.perf_counter()
+    gpu_root = cuda.merkle_root(leaves)
+    gpu_dt = time.perf_counter() - t0
+
+    match = cpu_root == gpu_root
+    speedup = cpu_dt / gpu_dt if gpu_dt > 0 else float("inf")
+    print(f"  CPU : {cpu_dt*1000:8.2f} ms")
+    print(f"  GPU : {gpu_dt*1000:8.2f} ms")
+    print(f"  speedup x{speedup:6.2f}    match: {match}")
+    print(f"  root: 0x{cpu_root.hex()}")
+    if not match:
+        print(f"  GPU root differs: 0x{gpu_root.hex()}")
+    assert match, "sha-3 merkle root mismatch"
 
 # ---------------------------------------------------------------------------
 
 def main() -> int:
-    # start up the gpu, then run all the comparisons
+    # --- Poseidon ---
     print("Initializing GPU Poseidon (uploading constants)...")
     t0 = time.perf_counter()
-    cuda = CudaPoseidon()
+    cuda_p = CudaPoseidon()
     print(f"  done in {(time.perf_counter()-t0)*1000:.1f} ms\n")
 
-    compare_single_hash(cuda)
+    compare_single_hash(cuda_p)
     print()
-
     for n in (16, 256, 4096, 65536):
-        compare_hash_batch(cuda, n)
+        compare_hash_batch(cuda_p, n)
+        print()
+    for n_leaves in (1, 5, 16, 1024, 65536):
+        compare_merkle(cuda_p, n_leaves)
         print()
 
-    for n_leaves in (1, 5, 16, 1024, 65536):
-        compare_merkle(cuda, n_leaves)
+    # --- SHA-3 / Keccak ---
+    print("\nInitializing GPU Keccak...")
+    t0 = time.perf_counter()
+    cuda_k = CudaKeccak()
+    print(f"  done in {(time.perf_counter()-t0)*1000:.1f} ms\n")
+
+    compare_keccak_single_hash(cuda_k)
+    print()
+    for n in (16, 256, 4096, 65536):
+        compare_keccak_hash_batch(cuda_k, n)
         print()
+    for n_leaves in (1, 5, 16, 1024, 65536):
+        compare_keccak_merkle(cuda_k, n_leaves)
+        print()
+
 
     print("All comparisons passed.")
     return 0
