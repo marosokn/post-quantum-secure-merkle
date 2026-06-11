@@ -70,7 +70,6 @@ void keccak_f1600(uint64_t state[5][5]) {
                 state[x][y] ^= D[x];
             }
         }
-
         // rho + pi
         uint64_t B[5][5];
         #pragma unroll
@@ -80,7 +79,6 @@ void keccak_f1600(uint64_t state[5][5]) {
                 B[y][(2 * x + 3 * y) % 5] = keccak_rot64(state[x][y], d_KECCAK_RHO[x][y]);
             }
         }
-
         // chi (the only non-linear step)
         #pragma unroll
         for (int x = 0; x < 5; x++) {
@@ -89,7 +87,6 @@ void keccak_f1600(uint64_t state[5][5]) {
                 state[x][y] = B[x][y] ^ ((~B[(x + 1) % 5][y]) & B[(x + 2) % 5][y]);
             }
         }
-
         // iota
         state[0][0] ^= d_KECCAK_RC[round];
     }
